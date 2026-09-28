@@ -25,7 +25,7 @@ router.post('/', async (req, res) => {
 
   const { data: house, error: houseError } = await supabase
     .from('houses')
-    .insert([{ name: name.trim(), owner_id: userId }])
+    .insert({ name: name.trim(), owner_id: userId })
     .select()
     .single();
 
@@ -35,7 +35,7 @@ router.post('/', async (req, res) => {
 
   const { data: period, error: periodError } = await supabase
     .from('periods')
-    .insert([{ house_id: house.id, month: parsedMonth, year: parsedYear }])
+    .insert({ house_id: house.id, month: parsedMonth, year: parsedYear, is_closed: false })
     .select()
     .single();
 

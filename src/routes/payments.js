@@ -16,12 +16,12 @@ router.post('/', async (req, res) => {
 
   const { data, error } = await supabase
     .from('payments')
-    .insert([{
+    .insert({
       period_id: periodId,
       paid_by: paidBy,
       paid_to: paidTo,
       amount: parsedAmount
-    }])
+    })
     .select()
     .single();
 

@@ -38,12 +38,12 @@ router.post('/:id/close', async (req, res) => {
   // 2. Crear nuevo período
   const { data: newPeriod, error: insertError } = await supabase
     .from('periods')
-    .insert([{
+    .insert({
       house_id: houseId,
       month: parsedMonth,
       year: parsedYear,
       is_closed: false,
-    }])
+    })
     .select()
     .single();
 

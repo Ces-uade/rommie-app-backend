@@ -35,7 +35,7 @@ router.post('/', async (req, res) => {
 
   const { data, error } = await supabase
     .from('roommates')
-    .insert([{ house_id: houseId, name: name.trim() }])
+    .insert({ house_id: houseId, name: name.trim() })
     .select()
     .single();
 
