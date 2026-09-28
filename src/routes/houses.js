@@ -57,8 +57,7 @@ router.get('/mine', async (req, res) => {
     .from('houses')
     .select('*, periods(*)')
     .eq('owner_id', userId)
-    .eq('periods.is_closed', false)
-    .maybeSingle();
+    .eq('periods.is_closed', false);
 
   if (error) {
     return res.status(400).json({ error: error.message });
