@@ -18,7 +18,53 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'participants debe tener al menos 1 elemento' });
   }
   if (!periodId || !paidBy || !concept || !date) {
-    return res.status(400).json({ error: 'periodId, paidBy, concept y date son requeridos' });
+    return res.status(400).json({ error: 'periodId, paidBy, concept y date son requeridos', message: 'periodId, paidBy, concept y date son requeridos' });
+  }
+
+  // Validate active period and date range
+  const { data: period, error: periodError } = await supabase
+    .from('periods')
+    .select('*')
+    .eq('id', periodId)
+    .single();
+
+  if (periodError || !period) {
+    return res.status(400).json({
+      error: 'No se encontró el período especificado',
+      message: 'No se encontró el período especificado',
+    });
+  }
+
+  if (period.is_closed) {
+    return res.status(400).json({
+      error: 'El período se encuentra cerrado',
+      message: 'El período se encuentra cerrado',
+    });
+  }
+
+  const dateParts = String(date).split('T')[0].split('-');
+  const expenseYear = parseInt(dateParts[0], 10);
+  const expenseMonth = parseInt(dateParts[1], 10);
+
+  if (isNaN(expenseYear) || isNaN(expenseMonth)) {
+    return res.status(400).json({
+      error: 'La fecha del gasto no es válida',
+      message: 'La fecha del gasto no es válida',
+    });
+  }
+
+  if (expenseYear < period.year || (expenseYear === period.year && expenseMonth < period.month)) {
+    return res.status(400).json({
+      error: 'La fecha del gasto no puede ser anterior al inicio del período abierto',
+      message: 'La fecha del gasto no puede ser anterior al inicio del período abierto',
+    });
+  }
+
+  if (expenseYear !== period.year || expenseMonth !== period.month) {
+    return res.status(400).json({
+      error: 'La fecha del gasto debe pertenecer al período abierto',
+      message: 'La fecha del gasto debe pertenecer al período abierto',
+    });
   }
 
   // Insert expense
