@@ -3,10 +3,10 @@ const router = express.Router();
 const supabase = require('../config/supabase');
 
 router.get('/', async (req, res) => {
-  const { houseId } = req.query;
+  const houseId = req.query.houseId || req.query.house_id;
 
   if (!houseId) {
-    return res.status(400).json({ error: 'houseId is required' });
+    return res.status(400).json({ error: 'houseId is required', message: 'houseId is required' });
   }
 
   const { data, error } = await supabase
@@ -16,7 +16,7 @@ router.get('/', async (req, res) => {
     .order('created_at', { ascending: true });
 
   if (error) {
-    return res.status(400).json({ error: error.message });
+    return res.status(400).json({ error: error.message, message: error.message });
   }
 
   return res.status(200).json(data);

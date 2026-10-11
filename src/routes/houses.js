@@ -55,7 +55,7 @@ router.get('/mine', async (req, res) => {
 
   const { data, error } = await supabase
     .from('houses')
-    .select('*, periods(*)')
+    .select('*, periods(*), roommates(*)')
     .eq('owner_id', userId)
     .eq('periods.is_closed', false);
 
