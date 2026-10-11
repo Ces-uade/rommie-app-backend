@@ -14,9 +14,6 @@ router.post('/', async (req, res) => {
   if (Math.round(parsedAmount * 100) !== parsedAmount * 100) {
     return res.status(400).json({ error: 'amount no puede tener más de 2 decimales' });
   }
-  if (!participants || !Array.isArray(participants) || participants.length < 1) {
-    return res.status(400).json({ error: 'participants debe tener al menos 1 elemento' });
-  }
   if (!periodId || !paidBy || !concept || !date) {
     return res.status(400).json({ error: 'periodId, paidBy, concept y date son requeridos', message: 'periodId, paidBy, concept y date son requeridos' });
   }
@@ -39,6 +36,27 @@ router.post('/', async (req, res) => {
     return res.status(400).json({
       error: 'El período se encuentra cerrado',
       message: 'El período se encuentra cerrado',
+    });
+  }
+
+  // Validate minimum roommates querying the database
+  const houseId = req.body.houseId || req.body.house_id || period.house_id;
+  const { count: roommateCount, error: countError } = await supabase
+    .from('roommates')
+    .select('*', { count: 'exact', head: true })
+    .eq('house_id', houseId);
+
+  if (countError) {
+    return res.status(400).json({
+      error: countError.message,
+      message: countError.message,
+    });
+  }
+
+  if (roommateCount < 2) {
+    return res.status(400).json({
+      error: 'Se necesitan al menos 2 integrantes para registrar gastos',
+      message: 'Se necesitan al menos 2 integrantes para registrar gastos',
     });
   }
 
@@ -78,11 +96,21 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: expenseError.message });
   }
 
+  // Determine participants (if empty or not provided, default to all roommates in the house)
+  let activeParticipants = participants;
+  if (!activeParticipants || !Array.isArray(activeParticipants) || activeParticipants.length === 0) {
+    const { data: allHouseRoommates } = await supabase
+      .from('roommates')
+      .select('id')
+      .eq('house_id', houseId);
+    activeParticipants = (allHouseRoommates || []).map((r) => r.id);
+  }
+
   // Fetch participants ordered by created_at
   const { data: roommates, error: roommatesError } = await supabase
     .from('roommates')
     .select('id, created_at')
-    .in('id', participants)
+    .in('id', activeParticipants)
     .order('created_at', { ascending: true });
 
   if (roommatesError) {
