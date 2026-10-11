@@ -20,12 +20,34 @@ router.post('/', async (req, res) => {
   }
 
   if (!userId) {
-    return res.status(400).json({ error: 'userId is required' });
+    return res.status(400).json({ error: 'userId is required', message: 'userId is required' });
+  }
+
+  const trimmedName = name.trim();
+
+  // Verificar si ya existe una casa con ese mismo nombre para ese usuario (case-insensitive)
+  const { data: existingHouses, error: searchError } = await supabase
+    .from('houses')
+    .select('*, periods(*)')
+    .eq('owner_id', userId)
+    .ilike('name', trimmedName)
+    .limit(1);
+
+  if (searchError) {
+    return res.status(400).json({ error: searchError.message, message: searchError.message });
+  }
+
+  if (existingHouses && existingHouses.length > 0) {
+    return res.status(400).json({
+      error: 'Ya existe una casa con ese nombre',
+      message: 'Ya existe una casa con ese nombre',
+      house: existingHouses[0],
+    });
   }
 
   const { data: house, error: houseError } = await supabase
     .from('houses')
-    .insert({ name: name.trim(), owner_id: userId })
+    .insert({ name: trimmedName, owner_id: userId })
     .select()
     .single();
 
