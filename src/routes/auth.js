@@ -2,9 +2,15 @@ const express = require('express');
 const router = express.Router();
 const supabase = require('../config/supabase');
 
+const deriveName = (email) => String(email || '').split('@')[0];
+
+const resolveName = (user, fallbackEmail) =>
+  (user?.user_metadata?.name && String(user.user_metadata.name).trim()) ||
+  deriveName(user?.email || fallbackEmail);
+
 router.post('/register', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, name } = req.body;
 
     if (!email || !password) {
       return res.status(400).json({
@@ -13,9 +19,13 @@ router.post('/register', async (req, res) => {
       });
     }
 
+    const accountName =
+      typeof name === 'string' && name.trim().length > 0 ? name.trim() : deriveName(email);
+
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
+      options: { data: { name: accountName } },
     });
 
     if (error) {
@@ -41,7 +51,12 @@ router.post('/register', async (req, res) => {
       });
     }
 
-    return res.status(200).json(data.user);
+    return res.status(200).json({
+      userId: data.user.id,
+      email: data.user.email,
+      name: resolveName(data.user, email),
+      ...data.user,
+    });
   } catch (err) {
     const isDuplicate =
       err?.code === 'user_already_exists' ||
@@ -78,7 +93,13 @@ router.post('/login', async (req, res) => {
     return res.status(400).json({ error: error.message });
   }
 
-  return res.status(200).json({ session: data.session, user: data.user });
+  return res.status(200).json({
+    userId: data.user.id,
+    email: data.user.email,
+    name: resolveName(data.user, email),
+    session: data.session,
+    user: data.user,
+  });
 });
 
 module.exports = router;
