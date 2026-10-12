@@ -321,15 +321,14 @@ router.post('/:id/complete', async (req, res) => {
       if (p) activePeriod = p;
     }
     if (!activePeriod) {
-      const { data: p } = await supabase
+      const { data: pList } = await supabase
         .from('periods')
         .select('*')
         .eq('house_id', task.house_id)
         .eq('is_closed', false)
         .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (p) activePeriod = p;
+        .limit(1);
+      if (pList && pList.length > 0) activePeriod = pList[0];
     }
 
     if (activePeriod) {
