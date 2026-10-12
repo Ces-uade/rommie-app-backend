@@ -148,9 +148,97 @@ router.post('/', async (req, res) => {
   return res.status(201).json(enrichTask(task, houseRoommates));
 });
 
+router.get('/stats', async (req, res) => {
+  const houseId = req.query.houseId || req.query.house_id;
+  const periodId = req.query.periodId || req.query.period_id;
+
+  if (!houseId || !periodId) {
+    const msg = 'houseId y periodId son requeridos';
+    return res.status(400).json({ error: msg, message: msg });
+  }
+
+  // 1. Consultar período
+  const { data: period, error: periodError } = await supabase
+    .from('periods')
+    .select('id, month, year, is_closed, created_at')
+    .eq('id', periodId)
+    .eq('house_id', houseId)
+    .maybeSingle();
+
+  if (periodError) {
+    return res.status(400).json({ error: periodError.message, message: periodError.message });
+  }
+
+  if (!period) {
+    return res.status(404).json({ error: 'Período no encontrado', message: 'Período no encontrado' });
+  }
+
+  // 2. Roommates de la casa
+  const { data: roommates, error: rmError } = await fetchRoommates(houseId);
+  if (rmError) {
+    return res.status(400).json({ error: rmError.message, message: rmError.message });
+  }
+
+  // 3. Tareas de la casa
+  const { data: tasks, error: tasksError } = await supabase
+    .from('tasks')
+    .select('id')
+    .eq('house_id', houseId);
+
+  if (tasksError) {
+    return res.status(400).json({ error: tasksError.message, message: tasksError.message });
+  }
+
+  const totalTasksCount = (tasks || []).length;
+
+  // 4. task_completions filtrados estrictamente por house_id y period_id
+  const { data: completions, error: compError } = await supabase
+    .from('task_completions')
+    .select('*')
+    .eq('house_id', houseId)
+    .eq('period_id', periodId);
+
+  if (compError) {
+    return res.status(400).json({ error: compError.message, message: compError.message });
+  }
+
+  const completionList = completions || [];
+  const totalCompletedInPeriod = completionList.length;
+
+  // Conteo por conviviente
+  const countsByRoommate = {};
+  completionList.forEach((c) => {
+    if (c.roommate_id) {
+      countsByRoommate[c.roommate_id] = (countsByRoommate[c.roommate_id] || 0) + 1;
+    }
+  });
+
+  const stats = (roommates || []).map((rm) => {
+    const completedCount = countsByRoommate[rm.id] || 0;
+    const percentage =
+      totalCompletedInPeriod > 0
+        ? Number(((completedCount / totalCompletedInPeriod) * 100).toFixed(1))
+        : 0;
+
+    return {
+      roommateId: rm.id,
+      name: rm.name,
+      completedCount,
+      percentage,
+    };
+  });
+
+  return res.status(200).json({
+    period,
+    totalTasksCount,
+    totalCompletedInPeriod,
+    stats,
+  });
+});
+
 router.post('/:id/complete', async (req, res) => {
   const { id } = req.params;
-  const { expectedIndex } = req.body || {};
+  const { expectedIndex, periodId } = req.body || {};
 
   const { data: task, error: fetchError } = await supabase
     .from('tasks')
@@ -189,6 +277,9 @@ router.post('/:id/complete', async (req, res) => {
     return res.status(400).json({ error: msg, message: msg });
   }
 
+  // Identificar conviviente que acaba de cumplir su turno
+  const completedRoommateId = ids[task.current_index];
+
   // Criterio 5: rotación circular y recálculo de fecha
   const newIndex = (task.current_index + 1) % ids.length;
   const today = todayStr();
@@ -214,6 +305,41 @@ router.post('/:id/complete', async (req, res) => {
   if (!updatedRows || updatedRows.length === 0) {
     const { data: current } = await supabase.from('tasks').select('*').eq('id', id).maybeSingle();
     return res.status(200).json(enrichTask(current || task, roommates));
+  }
+
+  // Registrar en task_completions con período abierto
+  if (completedRoommateId) {
+    let activePeriod = null;
+    if (periodId) {
+      const { data: p } = await supabase
+        .from('periods')
+        .select('*')
+        .eq('id', periodId)
+        .eq('house_id', task.house_id)
+        .eq('is_closed', false)
+        .maybeSingle();
+      if (p) activePeriod = p;
+    }
+    if (!activePeriod) {
+      const { data: p } = await supabase
+        .from('periods')
+        .select('*')
+        .eq('house_id', task.house_id)
+        .eq('is_closed', false)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (p) activePeriod = p;
+    }
+
+    if (activePeriod) {
+      await supabase.from('task_completions').insert({
+        house_id: task.house_id,
+        task_id: task.id,
+        period_id: activePeriod.id,
+        roommate_id: completedRoommateId,
+      });
+    }
   }
 
   return res.status(200).json(enrichTask(updatedRows[0], roommates));

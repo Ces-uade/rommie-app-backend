@@ -2,6 +2,28 @@ const express = require('express');
 const router = express.Router();
 const supabase = require('../config/supabase');
 
+router.get('/', async (req, res) => {
+  const houseId = req.query.houseId || req.query.house_id;
+
+  if (!houseId) {
+    return res.status(400).json({ error: 'houseId is required', message: 'houseId is required' });
+  }
+
+  const { data: periods, error } = await supabase
+    .from('periods')
+    .select('*')
+    .eq('house_id', houseId)
+    .order('year', { ascending: false })
+    .order('month', { ascending: false })
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    return res.status(400).json({ error: error.message, message: error.message });
+  }
+
+  return res.status(200).json(periods || []);
+});
+
 router.post('/:id/close', async (req, res) => {
   const { id } = req.params;
   const { houseId, newMonth, newYear } = req.body;

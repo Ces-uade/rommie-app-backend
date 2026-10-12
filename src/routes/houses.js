@@ -122,8 +122,7 @@ router.get('/mine', async (req, res) => {
   const { data: owned, error } = await supabase
     .from('houses')
     .select(HOUSE_SELECT)
-    .eq('owner_id', userId)
-    .eq('periods.is_closed', false);
+    .eq('owner_id', userId);
 
   if (error) {
     return res.status(400).json({ error: error.message, message: error.message });
@@ -139,8 +138,7 @@ router.get('/mine', async (req, res) => {
     const { data: joined, error: joinedError } = await supabase
       .from('houses')
       .select(HOUSE_SELECT)
-      .in('id', missingIds)
-      .eq('periods.is_closed', false);
+      .in('id', missingIds);
 
     if (joinedError) {
       return res.status(400).json({ error: joinedError.message, message: joinedError.message });
@@ -264,7 +262,6 @@ router.post('/join', async (req, res) => {
     .from('houses')
     .select(HOUSE_SELECT)
     .eq('id', house.id)
-    .eq('periods.is_closed', false)
     .single();
 
   if (fullError) {
