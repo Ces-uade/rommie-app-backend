@@ -3,7 +3,26 @@ const router = express.Router();
 const supabase = require('../config/supabase');
 
 router.post('/', async (req, res) => {
-  const { periodId, paidBy, concept, amount, date, participants } = req.body;
+  const { periodId, paidBy, concept, amount, date, participants, category } = req.body || {};
+
+  // Validación Criterio 1: category obligatoria y perteneciente a ['Fijo', 'Individual', 'Otro']
+  const ALLOWED_CATEGORIES = {
+    fijo: 'Fijo',
+    individual: 'Individual',
+    otro: 'Otro',
+  };
+
+  const normalizedCategory =
+    typeof category === 'string'
+      ? ALLOWED_CATEGORIES[category.trim().toLowerCase()]
+      : null;
+
+  if (!normalizedCategory) {
+    return res.status(400).json({
+      error: 'Debe seleccionar una categoría válida (Fijo, Individual u Otro)',
+      message: 'Debe seleccionar una categoría válida (Fijo, Individual u Otro)',
+    });
+  }
 
   // Validations
   const parsedAmount = parseFloat(amount);
@@ -88,7 +107,14 @@ router.post('/', async (req, res) => {
   // Insert expense
   const { data: expense, error: expenseError } = await supabase
     .from('expenses')
-    .insert({ period_id: periodId, paid_by: paidBy, concept, amount: parsedAmount, date })
+    .insert({
+      period_id: periodId,
+      paid_by: paidBy,
+      concept,
+      amount: parsedAmount,
+      date,
+      category: normalizedCategory,
+    })
     .select()
     .single();
 
@@ -138,27 +164,56 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: splitsError.message });
   }
 
-  return res.status(201).json({ expense, splits: insertedSplits });
+  return res.status(201).json({
+    expense: {
+      ...expense,
+      category: expense.category || 'Otro',
+    },
+    splits: insertedSplits,
+  });
 });
 
 router.get('/', async (req, res) => {
-  const { periodId } = req.query;
+  const { periodId, category } = req.query;
 
   if (!periodId) {
     return res.status(400).json({ error: 'periodId is required' });
   }
 
-  const { data, error } = await supabase
+  let query = supabase
     .from('expenses')
     .select('*, roommates(name), expense_splits(*, roommates(name))')
     .eq('period_id', periodId)
     .order('date', { ascending: false });
 
+  // Soporte opcional de query param category si es uno de los valores válidos
+  const CATEGORY_MAP = {
+    fijo: 'Fijo',
+    individual: 'Individual',
+    otro: 'Otro',
+  };
+  const filterCategory = typeof category === 'string' ? CATEGORY_MAP[category.trim().toLowerCase()] : null;
+
+  if (filterCategory) {
+    if (filterCategory === 'Otro') {
+      query = query.or('category.eq.Otro,category.is.null');
+    } else {
+      query = query.eq('category', filterCategory);
+    }
+  }
+
+  const { data, error } = await query;
+
   if (error) {
     return res.status(400).json({ error: error.message });
   }
 
-  return res.status(200).json(data);
+  const formattedExpenses = (data || []).map((exp) => ({
+    ...exp,
+    category: exp.category || 'Otro',
+  }));
+
+  return res.status(200).json(formattedExpenses);
 });
 
 module.exports = router;
