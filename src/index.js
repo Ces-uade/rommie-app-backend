@@ -9,6 +9,7 @@ const expenseRoutes = require('./routes/expenses');
 const balanceRoutes = require('./routes/balances');
 const paymentRoutes = require('./routes/payments');
 const periodRoutes = require('./routes/periods');
+const taskRoutes = require('./routes/tasks');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -23,6 +24,7 @@ app.use('/api/expenses', expenseRoutes);
 app.use('/api/balances', balanceRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/periods', periodRoutes);
+app.use('/api/tasks', taskRoutes);
 
 app.get('/', (req, res) => {
   res.send('API running');
