@@ -99,6 +99,28 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: houseError.message });
   }
 
+  // Vincular user_id al crear el conviviente inicial del creador
+  let creatorName = null;
+  try {
+    const { data: userData } = await supabase.auth.admin.getUserById(userId);
+    if (userData?.user) {
+      creatorName =
+        (userData.user.user_metadata?.name && String(userData.user.user_metadata.name).trim()) ||
+        String(userData.user.email || '').split('@')[0];
+    }
+  } catch {
+    // ignore
+  }
+
+  if (creatorName) {
+    await supabase.from('roommates').insert({
+      house_id: house.id,
+      name: creatorName.slice(0, 50),
+      user_id: userId,
+      is_active: true,
+    });
+  }
+
   const { data: period, error: periodError } = await supabase
     .from('periods')
     .insert({ house_id: house.id, month: parsedMonth, year: parsedYear, is_closed: false })
@@ -152,7 +174,55 @@ router.get('/mine', async (req, res) => {
     });
   }
 
-  return res.status(200).json(houses);
+  // Filtrar roommates para que incluyan solo is_active === true y marcar is_owner
+  const ownerNamesCache = {};
+  const formattedHouses = await Promise.all(
+    houses.map(async (h) => {
+      const allRms = Array.isArray(h.roommates) ? h.roommates : [];
+      const activeRms = allRms.filter((r) => r.is_active !== false);
+
+      let ownerName = null;
+      if (h.owner_id) {
+        if (ownerNamesCache[h.owner_id] !== undefined) {
+          ownerName = ownerNamesCache[h.owner_id];
+        } else {
+          try {
+            const { data: userData } = await supabase.auth.admin.getUserById(h.owner_id);
+            if (userData?.user) {
+              ownerName =
+                (userData.user.user_metadata?.name && String(userData.user.user_metadata.name).trim().toLowerCase()) ||
+                String(userData.user.email || '').split('@')[0].toLowerCase();
+            }
+          } catch {
+            // ignore
+          }
+          ownerNamesCache[h.owner_id] = ownerName;
+        }
+      }
+
+      const hasOwnerByUserId = activeRms.some((r) => r.user_id && r.user_id === h.owner_id);
+
+      const enrichedRms = activeRms.map((r) => {
+        let isOwner = false;
+        if (r.user_id && h.owner_id && r.user_id === h.owner_id) {
+          isOwner = true;
+        } else if (!hasOwnerByUserId && ownerName && r.name && r.name.trim().toLowerCase() === ownerName) {
+          isOwner = true;
+        }
+        return {
+          ...r,
+          is_owner: isOwner,
+        };
+      });
+
+      return {
+        ...h,
+        roommates: enrichedRms,
+      };
+    })
+  );
+
+  return res.status(200).json(formattedHouses);
 });
 
 const handleInvite = async (req, res) => {
@@ -234,30 +304,43 @@ router.post('/join', async (req, res) => {
   if (accountName) {
     const { data: existing, error: rmError } = await supabase
       .from('roommates')
-      .select('name')
-      .eq('house_id', house.id);
+      .select('id, name, user_id, is_active')
+      .eq('house_id', house.id)
+      .eq('is_active', true);
 
     if (rmError) {
       return res.status(400).json({ error: rmError.message, message: rmError.message });
     }
 
     const normalized = accountName.toLowerCase();
-    const exists = (existing || []).some((r) => r.name && r.name.trim().toLowerCase() === normalized);
+    const existingActive = (existing || []).find(
+      (r) => (r.user_id && r.user_id === userId) || (r.name && r.name.trim().toLowerCase() === normalized)
+    );
 
-    if (!exists) {
+    if (!existingActive) {
       const { error: insertError } = await supabase
         .from('roommates')
-        .insert({ house_id: house.id, name: accountName })
+        .insert({
+          house_id: house.id,
+          name: accountName,
+          user_id: userId,
+          is_active: true,
+        })
         .select()
         .single();
 
       if (insertError && insertError.code !== '23505') {
         return res.status(400).json({ error: insertError.message, message: insertError.message });
       }
+    } else if (!existingActive.user_id) {
+      await supabase
+        .from('roommates')
+        .update({ user_id: userId })
+        .eq('id', existingActive.id);
     }
   }
 
-  // c) Devolver la casa completa
+  // c) Devolver la casa completa con roommates activos
   const { data: fullHouse, error: fullError } = await supabase
     .from('houses')
     .select(HOUSE_SELECT)
@@ -268,7 +351,12 @@ router.post('/join', async (req, res) => {
     return res.status(400).json({ error: fullError.message, message: fullError.message });
   }
 
-  return res.status(200).json(fullHouse);
+  const activeRms = (fullHouse?.roommates || []).filter((r) => r.is_active !== false);
+
+  return res.status(200).json({
+    ...fullHouse,
+    roommates: activeRms,
+  });
 });
 
 module.exports = router;

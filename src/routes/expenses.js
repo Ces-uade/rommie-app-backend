@@ -58,12 +58,13 @@ router.post('/', async (req, res) => {
     });
   }
 
-  // Validate minimum roommates querying the database
+  // Validate minimum roommates querying the database (only active roommates)
   const houseId = req.body.houseId || req.body.house_id || period.house_id;
   const { count: roommateCount, error: countError } = await supabase
     .from('roommates')
     .select('*', { count: 'exact', head: true })
-    .eq('house_id', houseId);
+    .eq('house_id', houseId)
+    .eq('is_active', true);
 
   if (countError) {
     return res.status(400).json({
@@ -122,13 +123,14 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: expenseError.message });
   }
 
-  // Determine participants (if empty or not provided, default to all roommates in the house)
+  // Determine participants (if empty or not provided, default to all active roommates in the house)
   let activeParticipants = participants;
   if (!activeParticipants || !Array.isArray(activeParticipants) || activeParticipants.length === 0) {
     const { data: allHouseRoommates } = await supabase
       .from('roommates')
       .select('id')
-      .eq('house_id', houseId);
+      .eq('house_id', houseId)
+      .eq('is_active', true);
     activeParticipants = (allHouseRoommates || []).map((r) => r.id);
   }
 

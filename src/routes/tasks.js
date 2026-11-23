@@ -63,8 +63,13 @@ const validateTaskName = (name) => {
   return { valid: true, value: trimmedName };
 };
 
-const fetchRoommates = (houseId) =>
-  supabase.from('roommates').select('id, name').eq('house_id', houseId);
+const fetchRoommates = (houseId, onlyActive = false) => {
+  let query = supabase.from('roommates').select('id, name').eq('house_id', houseId);
+  if (onlyActive) {
+    query = query.eq('is_active', true);
+  }
+  return query;
+};
 
 router.get('/', async (req, res) => {
   const { houseId } = req.query;
@@ -113,8 +118,8 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: msg, message: msg });
   }
 
-  // Criterios 1 y 3: convivientes de la casa
-  const { data: houseRoommates, error: rmError } = await fetchRoommates(houseId);
+  // Criterios 1 y 3: convivientes activos de la casa
+  const { data: houseRoommates, error: rmError } = await fetchRoommates(houseId, true);
 
   if (rmError) {
     return res.status(400).json({ error: rmError.message, message: rmError.message });
