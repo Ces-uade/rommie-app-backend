@@ -82,6 +82,7 @@ router.get('/', async (req, res) => {
     .from('tasks')
     .select('*')
     .eq('house_id', houseId)
+    .eq('is_active', true)
     .order('next_due_date', { ascending: true })
     .order('created_at', { ascending: true });
 
@@ -279,7 +280,7 @@ router.post('/:id/complete', async (req, res) => {
     return res.status(400).json({ error: fetchError.message, message: fetchError.message });
   }
 
-  if (!task) {
+  if (!task || task.is_active === false) {
     return res.status(404).json({ error: 'Tarea no encontrada', message: 'Tarea no encontrada' });
   }
 
@@ -371,6 +372,142 @@ router.post('/:id/complete', async (req, res) => {
   }
 
   return res.status(200).json(enrichTask(updatedRows[0], roommates));
+});
+
+// PUT /api/tasks/:id (Criterios 1, 2, 3, 4, 5, 6, 7, 11, 13, 14 y 15)
+router.put('/:id', async (req, res) => {
+  const { id } = req.params;
+  const { name, frequency, roommateIds } = req.body || {};
+
+  // 1. Buscar la tarea por id
+  const { data: task, error: fetchError } = await supabase
+    .from('tasks')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (fetchError) {
+    return res.status(400).json({ error: fetchError.message, message: fetchError.message });
+  }
+
+  if (!task || task.is_active === false) {
+    return res.status(404).json({ error: 'Tarea no encontrada', message: 'Tarea no encontrada' });
+  }
+
+  // 2. Validar name (RM-20, 1 a 60 caracteres)
+  const nameValidation = validateTaskName(name);
+  if (!nameValidation.valid) {
+    return res.status(400).json({ error: nameValidation.message, message: nameValidation.message });
+  }
+
+  // 3. Validar frequency (case-insensitive)
+  const normalizedFrequency = typeof frequency === 'string' ? frequency.trim().toLowerCase() : '';
+  if (!FREQUENCIES.includes(normalizedFrequency)) {
+    const msg = `La frecuencia debe ser una de: ${FREQUENCIES.join(', ')}`;
+    return res.status(400).json({ error: msg, message: msg });
+  }
+
+  // 4. Validar roommateIds: deduplicar, mínimo 2 y todos activos de task.house_id
+  const { data: houseRoommates, error: rmError } = await fetchRoommates(task.house_id, true);
+  if (rmError) {
+    return res.status(400).json({ error: rmError.message, message: rmError.message });
+  }
+
+  const activeHouseRoommateIds = new Set((houseRoommates || []).map((r) => r.id));
+  const uniqueIds = Array.isArray(roommateIds)
+    ? [...new Set(roommateIds.filter((rId) => typeof rId === 'string' && UUID_RE.test(rId)))]
+    : [];
+
+  if (
+    !Array.isArray(roommateIds) ||
+    uniqueIds.length !== roommateIds.length ||
+    uniqueIds.length < 2 ||
+    !uniqueIds.every((rId) => activeHouseRoommateIds.has(rId))
+  ) {
+    const msg = 'roommateIds debe contener al menos 2 IDs de convivientes distintos y válidos de esta casa';
+    return res.status(400).json({ error: msg, message: msg });
+  }
+
+  // Criterios 4 y 5: Cálculo del nuevo responsable actual
+  const oldIds = Array.isArray(task.roommate_ids) ? task.roommate_ids : [];
+  const currentAssigneeId = oldIds[task.current_index];
+
+  let newCurrentIndex = 0;
+  if (currentAssigneeId && uniqueIds.includes(currentAssigneeId)) {
+    newCurrentIndex = uniqueIds.indexOf(currentAssigneeId);
+  } else {
+    newCurrentIndex = 0;
+  }
+
+  // Criterios 2, 3 y 11: Próxima fecha next_due_date
+  let newNextDueDate = task.next_due_date;
+  if (normalizedFrequency !== task.frequency) {
+    newNextDueDate = addFrequency(todayStr(), normalizedFrequency);
+  }
+
+  // Actualizar en tasks
+  const { data: updatedTask, error: updateError } = await supabase
+    .from('tasks')
+    .update({
+      name: nameValidation.value,
+      frequency: normalizedFrequency,
+      roommate_ids: uniqueIds,
+      current_index: newCurrentIndex,
+      next_due_date: newNextDueDate,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (updateError) {
+    return res.status(400).json({ error: updateError.message, message: updateError.message });
+  }
+
+  return res.status(200).json(enrichTask(updatedTask, houseRoommates));
+});
+
+// DELETE /api/tasks/:id (Criterios 8, 9, 10, 13, 14 y 15)
+router.delete('/:id', async (req, res) => {
+  const { id } = req.params;
+
+  const { data: task, error: fetchError } = await supabase
+    .from('tasks')
+    .select('id, is_active')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (fetchError) {
+    return res.status(400).json({ error: fetchError.message, message: fetchError.message });
+  }
+
+  if (!task) {
+    return res.status(404).json({ error: 'Tarea no encontrada', message: 'Tarea no encontrada' });
+  }
+
+  // Criterio 13: Idempotencia ante doble clic
+  if (task.is_active === false) {
+    return res.status(200).json({ message: 'Tarea eliminada', alreadyDeleted: true, id });
+  }
+
+  // Baja lógica
+  const { error: deleteError } = await supabase
+    .from('tasks')
+    .update({
+      is_active: false,
+      deleted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', id);
+
+  if (deleteError) {
+    return res.status(500).json({ error: deleteError.message, message: deleteError.message });
+  }
+
+  return res.status(200).json({
+    message: 'Tarea eliminada correctamente',
+    id,
+  });
 });
 
 router.validateTaskName = validateTaskName;

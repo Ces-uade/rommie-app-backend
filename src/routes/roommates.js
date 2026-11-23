@@ -260,7 +260,8 @@ router.delete('/:id', async (req, res) => {
   const { data: houseTasks, error: tasksError } = await supabase
     .from('tasks')
     .select('*')
-    .eq('house_id', house.id);
+    .eq('house_id', house.id)
+    .eq('is_active', true);
 
   if (tasksError) {
     return res.status(400).json({ error: tasksError.message, message: tasksError.message });
