@@ -191,8 +191,12 @@ router.get('/stats', async (req, res) => {
     return res.status(404).json({ error: 'Período no encontrado', message: 'Período no encontrado' });
   }
 
-  // 2. Roommates de la casa
-  const { data: roommates, error: rmError } = await fetchRoommates(houseId);
+  // 2. Roommates de la casa (activos e inactivos)
+  const { data: allRoommates, error: rmError } = await supabase
+    .from('roommates')
+    .select('id, name, is_active')
+    .eq('house_id', houseId);
+
   if (rmError) {
     return res.status(400).json({ error: rmError.message, message: rmError.message });
   }
@@ -231,7 +235,14 @@ router.get('/stats', async (req, res) => {
     }
   });
 
-  const stats = (roommates || []).map((rm) => {
+  // Filtrar: incluir todos los is_active !== false, más inactivos con completedCount > 0
+  const relevantRoommates = (allRoommates || []).filter((rm) => {
+    const completedCount = countsByRoommate[rm.id] || 0;
+    const isActive = rm.is_active !== false;
+    return isActive || completedCount > 0;
+  });
+
+  const stats = relevantRoommates.map((rm) => {
     const completedCount = countsByRoommate[rm.id] || 0;
     const percentage =
       totalCompletedInPeriod > 0
