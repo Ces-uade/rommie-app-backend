@@ -14,6 +14,24 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'periodId, paidBy y paidTo son requeridos' });
   }
 
+  const { data: period, error: periodError } = await supabase
+    .from('periods')
+    .select('is_closed')
+    .eq('id', periodId)
+    .maybeSingle();
+
+  if (periodError) {
+    return res.status(400).json({ error: periodError.message });
+  }
+
+  if (!period) {
+    return res.status(400).json({ error: 'No se encontró el período especificado', message: 'No se encontró el período especificado' });
+  }
+
+  if (period.is_closed === true) {
+    return res.status(400).json({ error: 'El período se encuentra cerrado', message: 'El período se encuentra cerrado' });
+  }
+
   const { data, error } = await supabase
     .from('payments')
     .insert({

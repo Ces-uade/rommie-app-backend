@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const supabase = require('../config/supabase');
+const { calculatePeriodBalances } = require('../utils/calculateBalances');
 
 router.get('/', async (req, res) => {
   const houseId = req.query.houseId || req.query.house_id;
@@ -81,7 +82,27 @@ router.post('/:id/close', async (req, res) => {
     return res.status(400).json({ error: msg, message: msg });
   }
 
-  // 3. Cerrar el período puntual y garantizar que todos los períodos abiertos de esa casa queden cerrados
+  // 3. Calcular deudas actuales y cerrar el período con su snapshot (Criterio 5)
+  if (!periodToClose.is_closed) {
+    let debts = [];
+    try {
+      const result = await calculatePeriodBalances(periodToClose.house_id, periodToClose.id);
+      debts = result.debts || [];
+    } catch (err) {
+      return res.status(400).json({ error: err.message, message: err.message });
+    }
+
+    const { error: snapshotError } = await supabase
+      .from('periods')
+      .update({ is_closed: true, closing_debts: debts })
+      .eq('id', periodToClose.id);
+
+    if (snapshotError) {
+      return res.status(400).json({ error: snapshotError.message });
+    }
+  }
+
+  // Cerrar cualquier otro período abierto previo de la casa
   const { error: updateError } = await supabase
     .from('periods')
     .update({ is_closed: true })
@@ -92,12 +113,6 @@ router.post('/:id/close', async (req, res) => {
     return res.status(400).json({ error: updateError.message });
   }
 
-  // Asegurar que si el período id ya estaba cerrado previamente, no genere inconsistencia
-  await supabase
-    .from('periods')
-    .update({ is_closed: true })
-    .eq('id', id);
-
   // 4. Crear nuevo período
   const { data: newPeriod, error: insertError } = await supabase
     .from('periods')
@@ -106,6 +121,7 @@ router.post('/:id/close', async (req, res) => {
       month: parsedMonth,
       year: parsedYear,
       is_closed: false,
+      closing_debts: null,
     })
     .select()
     .single();
