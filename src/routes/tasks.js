@@ -49,6 +49,20 @@ const enrichTask = (task, roommates) => {
   };
 };
 
+const validateTaskName = (name) => {
+  const trimmedName = typeof name === 'string' ? name.trim() : '';
+
+  if (trimmedName.length === 0) {
+    return { valid: false, message: 'El nombre de la tarea es obligatorio' };
+  }
+
+  if (trimmedName.length > 60) {
+    return { valid: false, message: 'El nombre no puede superar los 60 caracteres' };
+  }
+
+  return { valid: true, value: trimmedName };
+};
+
 const fetchRoommates = (houseId) =>
   supabase.from('roommates').select('id, name').eq('house_id', houseId);
 
@@ -86,11 +100,10 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'houseId is required', message: 'houseId is required' });
   }
 
-  // Criterio 2: nombre 1-60 caracteres tras trim
-  const trimmedName = typeof name === 'string' ? name.trim() : '';
-  if (trimmedName.length < 1 || trimmedName.length > 60) {
-    const msg = 'El nombre de la tarea debe tener entre 1 y 60 caracteres (sin contar espacios al inicio/final)';
-    return res.status(400).json({ error: msg, message: msg });
+  // RM-20 (DF-07): Validación de nombre de tarea
+  const nameValidation = validateTaskName(name);
+  if (!nameValidation.valid) {
+    return res.status(400).json({ error: nameValidation.message, message: nameValidation.message });
   }
 
   // Criterio 3: frecuencia válida (case-insensitive)
@@ -132,7 +145,7 @@ router.post('/', async (req, res) => {
     .from('tasks')
     .insert({
       house_id: houseId,
-      name: trimmedName,
+      name: nameValidation.value,
       frequency: normalizedFrequency,
       roommate_ids: uniqueIds,
       current_index: 0,
@@ -343,5 +356,7 @@ router.post('/:id/complete', async (req, res) => {
 
   return res.status(200).json(enrichTask(updatedRows[0], roommates));
 });
+
+router.validateTaskName = validateTaskName;
 
 module.exports = router;
