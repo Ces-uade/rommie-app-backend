@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const express = require('express');
 const router = express.Router();
 const supabase = require('../config/supabase');
+const { calculatePeriodBalances } = require('../utils/calculateBalances');
 
 const INVALID_CODE_MSG = 'El código o enlace de invitación es inválido o ha expirado';
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -274,7 +275,8 @@ router.post('/join', async (req, res) => {
     .maybeSingle();
 
   if (houseError || !house) {
-    return res.status(400).json({ error: INVALID_CODE_MSG, message: INVALID_CODE_MSG });
+    const notFoundMsg = 'El código de invitación no es válido o la casa ya no existe';
+    return res.status(404).json({ error: notFoundMsg, message: notFoundMsg });
   }
 
   const { user, ids } = await getJoinedHouseIds(userId);
@@ -356,6 +358,337 @@ router.post('/join', async (req, res) => {
   return res.status(200).json({
     ...fullHouse,
     roommates: activeRms,
+  });
+});
+
+// GET /api/houses/:id/delete-info (Criterio 2)
+router.get('/:id/delete-info', async (req, res) => {
+  const { id } = req.params;
+
+  const { data: house, error: houseError } = await supabase
+    .from('houses')
+    .select('id')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (houseError || !house) {
+    return res.status(404).json({ error: 'Esta casa ya no existe', message: 'Esta casa ya no existe' });
+  }
+
+  const { data: openPeriod, error: periodError } = await supabase
+    .from('periods')
+    .select('id')
+    .eq('house_id', house.id)
+    .eq('is_closed', false)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (periodError) {
+    return res.status(400).json({ error: periodError.message, message: periodError.message });
+  }
+
+  let hasPendingDebts = false;
+  let debtsCount = 0;
+
+  if (openPeriod) {
+    try {
+      const { balances, debts } = await calculatePeriodBalances(house.id, openPeriod.id);
+      const pendingDebtsList = debts || [];
+      const hasBalancePending = (balances || []).some((b) => Math.abs(Number(b.balance) || 0) > 0.01);
+      hasPendingDebts = pendingDebtsList.length > 0 || hasBalancePending;
+      debtsCount = pendingDebtsList.length;
+    } catch {
+      // ignore
+    }
+  }
+
+  return res.status(200).json({ hasPendingDebts, debtsCount });
+});
+
+// DELETE /api/houses/:id — Eliminar casa (Criterios 1, 4, 5, 6, 8, 13 y 14)
+router.delete('/:id', async (req, res) => {
+  const { id } = req.params;
+  const userId = req.body?.userId || req.query?.userId || req.headers['x-user-id'];
+
+  const { data: house, error: houseError } = await supabase
+    .from('houses')
+    .select('id, owner_id')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (houseError || !house) {
+    return res.status(404).json({ error: 'Esta casa ya no existe', message: 'Esta casa ya no existe' });
+  }
+
+  // Criterio 1: Solo el creador puede eliminar la casa
+  if (!userId || house.owner_id !== userId) {
+    return res.status(403).json({
+      error: 'Solo el creador puede eliminar la casa',
+      message: 'Solo el creador puede eliminar la casa',
+    });
+  }
+
+  // Consultar roommates de esa casa con user_id no nulo antes de borrar
+  const { data: houseRoommates } = await supabase
+    .from('roommates')
+    .select('user_id')
+    .eq('house_id', house.id)
+    .not('user_id', 'is', null);
+
+  const memberUserIds = (houseRoommates || [])
+    .map((r) => r.user_id)
+    .filter((uId) => uId && uId !== house.owner_id);
+
+  // Borrar la casa en Supabase (ON DELETE CASCADE se encarga de las tablas hijas)
+  const { error: deleteError } = await supabase
+    .from('houses')
+    .delete()
+    .eq('id', house.id);
+
+  if (deleteError) {
+    return res.status(500).json({ error: deleteError.message, message: deleteError.message });
+  }
+
+  // Limpiar house.id de user_metadata.joined_houses en Auth para invitados
+  for (const mId of memberUserIds) {
+    try {
+      const { data: memberUser } = await supabase.auth.admin.getUserById(mId);
+      if (memberUser?.user) {
+        const currentJoined = memberUser.user.user_metadata?.joined_houses;
+        if (Array.isArray(currentJoined) && currentJoined.includes(house.id)) {
+          const updatedJoined = currentJoined.filter((hId) => hId !== house.id);
+          await supabase.auth.admin.updateUserById(mId, {
+            user_metadata: {
+              ...(memberUser.user.user_metadata || {}),
+              joined_houses: updatedJoined,
+            },
+          });
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return res.status(200).json({
+    message: 'Casa eliminada correctamente',
+    id: house.id,
+  });
+});
+
+// POST /api/houses/:id/leave — Salir de la casa (Criterios 1, 11, 12, 13 y 14)
+router.post('/:id/leave', async (req, res) => {
+  const { id } = req.params;
+  const userId = req.body?.userId || req.query?.userId || req.headers['x-user-id'];
+
+  if (!userId) {
+    return res.status(401).json({ error: 'userId es requerido', message: 'userId es requerido' });
+  }
+
+  const { data: house, error: houseError } = await supabase
+    .from('houses')
+    .select('id, owner_id')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (houseError || !house) {
+    return res.status(404).json({ error: 'Esta casa ya no existe', message: 'Esta casa ya no existe' });
+  }
+
+  // Criterio 1: Creador no puede salir de la casa
+  if (house.owner_id === userId) {
+    return res.status(400).json({
+      error: 'El creador no puede salir de la casa. Para irte debés eliminar la casa.',
+      message: 'El creador no puede salir de la casa. Para irte debés eliminar la casa.',
+    });
+  }
+
+  // Buscar conviviente activo del usuario en esa casa
+  const { data: activeRoommates, error: rmError } = await supabase
+    .from('roommates')
+    .select('*')
+    .eq('house_id', house.id)
+    .eq('is_active', true);
+
+  if (rmError) {
+    return res.status(400).json({ error: rmError.message, message: rmError.message });
+  }
+
+  let roommate = (activeRoommates || []).find((r) => r.user_id && r.user_id === userId);
+
+  if (!roommate) {
+    // Fallback por nombre del usuario en Auth
+    try {
+      const { data: userData } = await supabase.auth.admin.getUserById(userId);
+      if (userData?.user) {
+        const authName =
+          (userData.user.user_metadata?.name && String(userData.user.user_metadata.name).trim().toLowerCase()) ||
+          String(userData.user.email || '').split('@')[0].toLowerCase();
+        roommate = (activeRoommates || []).find(
+          (r) => r.name && r.name.trim().toLowerCase() === authName
+        );
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  if (!roommate) {
+    // Idempotencia para doble clic: si ya no tiene house.id en joined_houses
+    const { ids } = await getJoinedHouseIds(userId);
+    if (!ids.includes(house.id)) {
+      return res.status(200).json({ message: 'Saliste de la casa', alreadyLeft: true, houseId: house.id });
+    }
+    return res.status(403).json({
+      error: 'No sos miembro activo de esta casa',
+      message: 'No sos miembro activo de esta casa',
+    });
+  }
+
+  // Criterio 11 — Validaciones antes de escribir:
+  // a) Mínimo 2 convivientes activos
+  const activeCount = (activeRoommates || []).length;
+  if (activeCount <= 2) {
+    return res.status(400).json({
+      error: 'La casa necesita al menos dos convivientes',
+      message: 'La casa necesita al menos dos convivientes',
+    });
+  }
+
+  // b) Saldos o deudas pendientes en el período abierto
+  const { data: openPeriod, error: periodError } = await supabase
+    .from('periods')
+    .select('id')
+    .eq('house_id', house.id)
+    .eq('is_closed', false)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (periodError) {
+    return res.status(400).json({ error: periodError.message, message: periodError.message });
+  }
+
+  if (openPeriod) {
+    try {
+      const { balances, debts } = await calculatePeriodBalances(house.id, openPeriod.id);
+      const rmBalanceObj = (balances || []).find((b) => b.id === roommate.id);
+      const balanceVal = rmBalanceObj ? Number(rmBalanceObj.balance) : 0;
+      const hasPendingBalance = Math.abs(balanceVal) > 0.01;
+
+      const hasPendingDebts = (debts || []).some(
+        (d) =>
+          d.deudor_id === roommate.id ||
+          d.acreedor_id === roommate.id ||
+          d.from?.id === roommate.id ||
+          d.to?.id === roommate.id
+      );
+
+      if (hasPendingBalance || hasPendingDebts) {
+        return res.status(400).json({
+          error: 'No podés salir de la casa porque tenés saldos o deudas pendientes. Registrá los pagos correspondientes primero',
+          message: 'No podés salir de la casa porque tenés saldos o deudas pendientes. Registrá los pagos correspondientes primero',
+        });
+      }
+    } catch (calcErr) {
+      return res.status(400).json({ error: calcErr.message, message: calcErr.message });
+    }
+  }
+
+  // c) Tareas en rotación
+  const { data: houseTasks, error: tasksError } = await supabase
+    .from('tasks')
+    .select('*')
+    .eq('house_id', house.id);
+
+  if (tasksError) {
+    return res.status(400).json({ error: tasksError.message, message: tasksError.message });
+  }
+
+  const activeIdSet = new Set((activeRoommates || []).map((r) => r.id));
+  activeIdSet.delete(roommate.id);
+
+  const affectedTasks = [];
+  for (const t of houseTasks || []) {
+    const ids = Array.isArray(t.roommate_ids) ? t.roommate_ids : [];
+    if (ids.includes(roommate.id)) {
+      const remainingActiveIds = ids.filter((idItem) => idItem !== roommate.id && activeIdSet.has(idItem));
+      if (remainingActiveIds.length < 2) {
+        return res.status(400).json({
+          error: `No podés salir de la casa porque la tarea "${t.name}" quedaría con menos de dos convivientes. Editá la tarea primero.`,
+          message: `No podés salir de la casa porque la tarea "${t.name}" quedaría con menos de dos convivientes. Editá la tarea primero.`,
+        });
+      }
+      affectedTasks.push(t);
+    }
+  }
+
+  // Criterio 12 — Si pasan todas las validaciones, aplicar cambios:
+  // 1. Pase circular en tareas
+  for (const t of affectedTasks) {
+    const ids = Array.isArray(t.roommate_ids) ? t.roommate_ids : [];
+    const idx = ids.indexOf(roommate.id);
+    const newIds = ids.filter((idItem) => idItem !== roommate.id);
+
+    let newIndex = t.current_index;
+    if (idx < t.current_index) {
+      newIndex = t.current_index - 1;
+    } else if (idx === t.current_index) {
+      newIndex = t.current_index % newIds.length;
+    } else if (idx > t.current_index) {
+      newIndex = t.current_index;
+    }
+
+    const { error: taskUpdateError } = await supabase
+      .from('tasks')
+      .update({
+        roommate_ids: newIds,
+        current_index: newIndex,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', t.id);
+
+    if (taskUpdateError) {
+      return res.status(400).json({ error: taskUpdateError.message, message: taskUpdateError.message });
+    }
+  }
+
+  // 2. Baja lógica del conviviente
+  const { error: rmDeleteError } = await supabase
+    .from('roommates')
+    .update({
+      is_active: false,
+      deleted_at: new Date().toISOString(),
+    })
+    .eq('id', roommate.id);
+
+  if (rmDeleteError) {
+    return res.status(400).json({ error: rmDeleteError.message, message: rmDeleteError.message });
+  }
+
+  // 3. Quitar house.id de user_metadata.joined_houses del usuario en Auth
+  try {
+    const { data: memberUser } = await supabase.auth.admin.getUserById(userId);
+    if (memberUser?.user) {
+      const currentJoined = memberUser.user.user_metadata?.joined_houses;
+      if (Array.isArray(currentJoined)) {
+        const updatedJoined = currentJoined.filter((hId) => hId !== house.id);
+        await supabase.auth.admin.updateUserById(userId, {
+          user_metadata: {
+            ...(memberUser.user.user_metadata || {}),
+            joined_houses: updatedJoined,
+          },
+        });
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return res.status(200).json({
+    message: 'Saliste de la casa correctamente',
+    houseId: house.id,
   });
 });
 
